@@ -54,6 +54,7 @@ run_glpi_optional() {
 mysql_table_exists() {
 	local table="$1"
 
+	# shellcheck disable=SC2153
 	MYSQL_PWD="${GLPI_DB_PASSWORD}" mysql \
 		--host="${GLPI_DB_HOST}" \
 		--port="${GLPI_DB_PORT}" \
@@ -121,7 +122,16 @@ php_config_set() {
 	PHP_CONFIG_FILE="$file" \
 		PHP_CONFIG_KEY="$key" \
 		PHP_CONFIG_VALUE="$value" \
-		php -r '$file = getenv("PHP_CONFIG_FILE"); $key = getenv("PHP_CONFIG_KEY"); $value = getenv("PHP_CONFIG_VALUE"); $cfg = is_file($file) ? include $file : array(); if (!is_array($cfg)) { $cfg = array(); } $cfg[$key] = $value; file_put_contents($file, "<?php" . PHP_EOL . "return " . var_export($cfg, true) . ";" . PHP_EOL);'
+		php -r "$(cat <<'PHPEOF'
+$file = getenv("PHP_CONFIG_FILE");
+$key = getenv("PHP_CONFIG_KEY");
+$value = getenv("PHP_CONFIG_VALUE");
+$cfg = is_file($file) ? include $file : array();
+if (!is_array($cfg)) { $cfg = array(); }
+$cfg[$key] = $value;
+file_put_contents($file, "<?php" . PHP_EOL . "return " . var_export($cfg, true) . ";" . PHP_EOL);
+PHPEOF
+)"
 }
 
 configure_local_defaults() {
