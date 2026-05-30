@@ -123,34 +123,30 @@ jobs:
 
           docker compose ${{ steps.docker-inputs.outputs.compose_args }} up --build -d
 
-          for attempt in {1..60}; do
+          for attempt in {1..20}; do
+            echo "Smoke test attempt $attempt/20..."
             docker compose ${{ steps.docker-inputs.outputs.compose_args }} ps
 
             if docker compose ${{ steps.docker-inputs.outputs.compose_args }} ps --format json | jq -e 'select(.Health == "unhealthy")' >/dev/null; then
+              echo "ERROR: Container is unhealthy!"
               docker compose ${{ steps.docker-inputs.outputs.compose_args }} logs --no-color
               exit 1
             fi
 
-            url=""
-            for target in apache:80 apache:8080 glpi:80 glpi:8080 web:80 web:8080 app:80 app:8080; do
-              service="${target%%:*}"
-              port="${target##*:}"
+            # Default URL, try to fetch directly
+            url="http://127.0.0.1:8080/"
 
-              if published="$(docker compose ${{ steps.docker-inputs.outputs.compose_args }} port "$service" "$port" 2>/dev/null)" && [[ -n "$published" ]]; then
-                url="http://$published/"
-                break
-              fi
-            done
-
-            url="${url:-http://127.0.0.1:8080/}"
-            if curl -fsSI "$url" >/tmp/apache-headers.txt && curl -fsS "$url" >/dev/null; then
+            if curl -fsSI "$url" >/tmp/apache-headers.txt 2>&1 && curl -fsS "$url" >/dev/null 2>&1; then
+              echo "✓ Smoke test passed!"
               cat /tmp/apache-headers.txt
               exit 0
             fi
 
-            sleep 10
+            echo "Waiting for service to be ready... (${attempt}/20)"
+            sleep 3
           done
 
+          echo "ERROR: Smoke test failed after 20 attempts!"
           docker compose ${{ steps.docker-inputs.outputs.compose_args }} logs --no-color
           exit 1
 
