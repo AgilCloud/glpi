@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: glpi-ci
+
+jobs:
+  docker:
+    name: Docker validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Docker inputs
+        id: docker-inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dockerfile=""
+          for candidate in docker/Dockerfile Dockerfile; do
+            if [[ -f "$candidate" ]]; then
+              dockerfile="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$dockerfile" ]]; then
+            echo "No Dockerfile found. Expected docker/Dockerfile or Dockerfile." >&2
+            exit 1
+          fi
+
+          compose_args=()
+          for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+            if [[ -f "$candidate" ]]; then
+              compose_args+=("-f" "$candidate")
+            fi
+          done
+
+          if [[ ${#compose_args[@]} -eq 0 ]]; then
+            echo "No Compose file found. Expected compose.yaml, compose.yml, docker-compose.yaml, or docker-compose.yml." >&2
+            exit 1
+          fi
+
+          {
+            echo "dockerfile=$dockerfile"
+            printf 'compose_args='
+            printf '%q ' "${compose_args[@]}"
+            echo
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate Compose config
+        shell: bash
+        run: docker compose ${{ steps.docker-inputs.outputs.compose_args }} config
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ steps.docker-inputs.outputs.dockerfile }}
+
+      - name: Install ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y shellcheck
+
+      - name: Lint bash scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t scripts < <(
+            find . \
+              -path ./.git -prune -o \
+              -type f \( -name '*.sh' -o -path './docker/bin/*' -o -path './scripts/*' \) \
+              -print | sort
+          )
+
+          if [[ ${#scripts[@]} -eq 0 ]]; then
+            echo "No bash scripts found to lint."
+            exit 0
+          fi
+
+          shellcheck "${scripts[@]}"
+
+      - name: Build image without push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ steps.docker-inputs.outputs.dockerfile }}
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Prepare smoke test secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p secrets
+          printf '%s\n' 'glpi-ci-db-password' > secrets/glpi_db_password.txt
+          printf '%s\n' 'glpi-ci-admin-password' > secrets/glpi_admin_password.txt
+
+      - name: Smoke test Apache startup and healthcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker compose ${{ steps.docker-inputs.outputs.compose_args }} up --build -d
+
+          for attempt in {1..20}; do
+            echo "Smoke test attempt $attempt/20..."
+            docker compose ${{ steps.docker-inputs.outputs.compose_args }} ps
+
+            if docker compose ${{ steps.docker-inputs.outputs.compose_args }} ps --format json | jq -e 'select(.Health == "unhealthy")' >/dev/null; then
+              echo "ERROR: Container is unhealthy!"
+              docker compose ${{ steps.docker-inputs.outputs.compose_args }} logs --no-color
+              exit 1
+            fi
+
+            # Default URL, try to fetch directly
+            url="http://127.0.0.1:8080/"
+
+            if curl -fsSI "$url" >/tmp/apache-headers.txt 2>&1 && curl -fsS "$url" >/dev/null 2>&1; then
+              echo "✓ Smoke test passed!"
+              cat /tmp/apache-headers.txt
+              exit 0
+            fi
+
+            echo "Waiting for service to be ready... (${attempt}/20)"
+            sleep 3
+          done
+
+          echo "ERROR: Smoke test failed after 20 attempts!"
+          docker compose ${{ steps.docker-inputs.outputs.compose_args }} logs --no-color
+          exit 1
+
+      - name: Cleanup Compose
+        if: always()
+        shell: bash
+        run: docker compose ${{ steps.docker-inputs.outputs.compose_args }} down --volumes --remove-orphans

@@ -1,0 +1,21 @@
+<IfModule mod_rewrite.c>
+   RewriteEngine On
+   RewriteBase /
+
+   # Allow access to actual files and directories
+   RewriteCond %{REQUEST_FILENAME} -f [OR]
+   RewriteCond %{REQUEST_FILENAME} -d
+   RewriteRule ^.*$ - [S=1]
+
+   # Rewrite everything else to index.php
+   RewriteRule ^(.*)$ index.php/$1 [L]
+</IfModule>
+
+<IfModule mod_authz_core.c>
+   <FilesMatch "\.php$">
+      Require all granted
+   </FilesMatch>
+   <FilesMatch "^\.">
+      Require all denied
+   </FilesMatch>
+</IfModule>
