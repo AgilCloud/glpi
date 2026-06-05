@@ -51,6 +51,7 @@ services:
       - glpi_plugins:/var/lib/glpi/plugins
       - glpi_marketplace:/var/lib/glpi/marketplace
       - glpi_config:/var/lib/glpi/config
+      - .secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/ >/dev/null"]
       interval: 30s
